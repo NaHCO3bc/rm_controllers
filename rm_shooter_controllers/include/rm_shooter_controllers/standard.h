@@ -47,6 +47,8 @@
 #include <dynamic_reconfigure/server.h>
 #include <rm_shooter_controllers/ShooterConfig.h>
 #include <rm_msgs/ShootCmd.h>
+#include <rm_msgs/ShootData.h>
+#include <rm_msgs/GameRobotStatus.h>
 
 #include <utility>
 
@@ -55,7 +57,7 @@ namespace rm_shooter_controllers
 struct Config
 {
   double block_effort, block_speed, block_duration, block_overtime, anti_block_angle, anti_block_threshold;
-  double qd_10, qd_15, qd_16, qd_18, qd_30, lf_extra_rotat_speed;
+  double k_coeff, qd_10, qd_15, qd_16, qd_18, qd_30, lf_extra_rotat_speed;
 };
 
 class Controller : public controller_interface::MultiInterfaceController<hardware_interface::EffortJointInterface,
@@ -78,6 +80,15 @@ private:
   {
     cmd_rt_buffer_.writeFromNonRT(*msg);
   }
+  void shootDataCB(const rm_msgs::ShootDataConstPtr& msg)
+  {
+    data_rt_buffer_.writeFromNonRT(*msg);
+    get_bullet_speed_ = true;
+  }
+  void robotStatusCB(const rm_msgs::GameRobotStatusConstPtr& msg)
+  {
+    status_rt_buffer_.writeFromNonRT(*msg);
+  }
   void reconfigCB(rm_shooter_controllers::ShooterConfig& config, uint32_t /*level*/);
 
   hardware_interface::EffortJointInterface* effort_joint_interface_{};
@@ -88,6 +99,7 @@ private:
   bool dynamic_reconfig_initialized_ = false;
   bool state_changed_ = false;
   bool maybe_block_ = false;
+  bool get_bullet_speed_ = false;
 
   ros::Time last_shoot_time_, block_time_, last_block_time_;
   enum
@@ -101,8 +113,14 @@ private:
   Config config_{};
   realtime_tools::RealtimeBuffer<Config> config_rt_buffer;
   realtime_tools::RealtimeBuffer<rm_msgs::ShootCmd> cmd_rt_buffer_;
+  realtime_tools::RealtimeBuffer<rm_msgs::ShootData> data_rt_buffer_;
+  realtime_tools::RealtimeBuffer<rm_msgs::GameRobotStatus> status_rt_buffer_;
   rm_msgs::ShootCmd cmd_;
+  rm_msgs::ShootData data_;
+  rm_msgs::GameRobotStatus status_;
   ros::Subscriber cmd_subscriber_;
+  ros::Subscriber bullet_speed_sub_;
+  ros::Subscriber robot_status_sub_;
   dynamic_reconfigure::Server<rm_shooter_controllers::ShooterConfig>* d_srv_{};
 };
 

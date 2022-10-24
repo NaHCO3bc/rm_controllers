@@ -50,6 +50,7 @@ bool Controller::init(hardware_interface::RobotHW* robot_hw, ros::NodeHandle& ro
               .block_overtime = getParam(controller_nh, "block_overtime", 0.),
               .anti_block_angle = getParam(controller_nh, "anti_block_angle", 0.),
               .anti_block_threshold = getParam(controller_nh, "anti_block_threshold", 0.),
+              .k_coeff = getParam(controller_nh, "k_coeff", 0.),
               .qd_10 = getParam(controller_nh, "qd_10", 0.),
               .qd_15 = getParam(controller_nh, "qd_15", 0.),
               .qd_16 = getParam(controller_nh, "qd_16", 0.),
@@ -61,6 +62,9 @@ bool Controller::init(hardware_interface::RobotHW* robot_hw, ros::NodeHandle& ro
   push_qd_threshold_ = getParam(controller_nh, "push_qd_threshold", 0.);
 
   cmd_subscriber_ = controller_nh.subscribe<rm_msgs::ShootCmd>("command", 1, &Controller::commandCB, this);
+  bullet_speed_sub_ = controller_nh.subscribe<rm_msgs::ShootData>("/shoot_data", 1, &Controller::shootDataCB, this);
+  robot_status_sub_ =
+      controller_nh.subscribe<rm_msgs::GameRobotStatus>("/game_robot_status", 1, &Controller::robotStatusCB, this);
   // Init dynamic reconfigure
   d_srv_ = new dynamic_reconfigure::Server<rm_shooter_controllers::ShooterConfig>(controller_nh);
   dynamic_reconfigure::Server<rm_shooter_controllers::ShooterConfig>::CallbackType cb = [this](auto&& PH1, auto&& PH2) {
@@ -87,6 +91,8 @@ void Controller::update(const ros::Time& time, const ros::Duration& period)
 {
   cmd_ = *cmd_rt_buffer_.readFromRT();
   config_ = *config_rt_buffer.readFromRT();
+  data_ = *data_rt_buffer_.readFromNonRT();
+  status_ = *status_rt_buffer_.readFromNonRT();
   if (state_ != cmd_.mode)
   {
     if (state_ != BLOCK)
@@ -209,19 +215,35 @@ void Controller::block(const ros::Time& time, const ros::Duration& period)
 
 void Controller::setSpeed(const rm_msgs::ShootCmd& cmd)
 {
-  double qd_des;
-  if (cmd_.speed == cmd_.SPEED_10M_PER_SECOND)
-    qd_des = config_.qd_10;
-  else if (cmd_.speed == cmd_.SPEED_15M_PER_SECOND)
-    qd_des = config_.qd_15;
-  else if (cmd_.speed == cmd_.SPEED_16M_PER_SECOND)
-    qd_des = config_.qd_16;
-  else if (cmd_.speed == cmd_.SPEED_18M_PER_SECOND)
-    qd_des = config_.qd_18;
-  else if (cmd_.speed == cmd_.SPEED_30M_PER_SECOND)
-    qd_des = config_.qd_30;
-  else
-    qd_des = 0.;
+  static double qd_des, set_bullet_speed;
+  double error, k_bullet_speed;
+  if ((set_bullet_speed != status_.shooter_id_1_17_mm_speed_limit && status_.shooter_id_1_17_mm_speed_limit != 0) ||
+      (set_bullet_speed != status_.shooter_id_2_17_mm_speed_limit && status_.shooter_id_2_17_mm_speed_limit != 0) ||
+      (set_bullet_speed != status_.shooter_id_1_42_mm_speed_limit && status_.shooter_id_1_42_mm_speed_limit != 0))
+  {
+    if (cmd_.speed == cmd_.SPEED_10M_PER_SECOND)
+      qd_des = config_.qd_10, set_bullet_speed = 10.;
+    else if (cmd_.speed == cmd_.SPEED_15M_PER_SECOND)
+      qd_des = config_.qd_15, set_bullet_speed = 15.;
+    else if (cmd_.speed == cmd_.SPEED_16M_PER_SECOND)
+      qd_des = config_.qd_16, set_bullet_speed = 16.;
+    else if (cmd_.speed == cmd_.SPEED_18M_PER_SECOND)
+      qd_des = config_.qd_18, set_bullet_speed = 18.;
+    else if (cmd_.speed == cmd_.SPEED_30M_PER_SECOND)
+      qd_des = config_.qd_30, set_bullet_speed = 30.;
+    else
+      qd_des = 0.;
+  }
+  if (data_.bullet_speed != 0 && get_bullet_speed_)
+  {
+    get_bullet_speed_ = false;
+    error = set_bullet_speed - data_.bullet_speed - 1;
+    if (error != 0)
+    {
+      k_bullet_speed = error / set_bullet_speed;
+      qd_des += k_bullet_speed * config_.k_coeff;
+    }
+  }
   ctrl_friction_l_.setCommand(qd_des + config_.lf_extra_rotat_speed);
   ctrl_friction_r_.setCommand(-qd_des);
 }
@@ -244,6 +266,7 @@ void Controller::reconfigCB(rm_shooter_controllers::ShooterConfig& config, uint3
     config.block_overtime = init_config.block_overtime;
     config.anti_block_angle = init_config.anti_block_angle;
     config.anti_block_threshold = init_config.anti_block_threshold;
+    config.k_coeff = init_config.k_coeff;
     config.qd_10 = init_config.qd_10;
     config.qd_15 = init_config.qd_15;
     config.qd_16 = init_config.qd_16;
@@ -258,6 +281,7 @@ void Controller::reconfigCB(rm_shooter_controllers::ShooterConfig& config, uint3
                         .block_overtime = config.block_overtime,
                         .anti_block_angle = config.anti_block_angle,
                         .anti_block_threshold = config.anti_block_threshold,
+                        .k_coeff = config.k_coeff,
                         .qd_10 = config.qd_10,
                         .qd_15 = config.qd_15,
                         .qd_16 = config.qd_16,
